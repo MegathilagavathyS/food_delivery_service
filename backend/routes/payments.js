@@ -364,14 +364,6 @@ router.post('/verify-otp', async (req, res) => {
       return res.status(400).json({ success: false, message: 'OTP is required' });
     }
 
-    // Build form-encoded body
-    const params = new URLSearchParams();
-    params.append('otp', otp);
-    if (payment_id) params.append('payment_id', payment_id);
-    if (token_id) params.append('token_id', token_id);
-    if (contact) params.append('contact', contact);
-
-    // Build form-encoded body
     const params = new URLSearchParams();
     params.append('otp', otp);
     if (payment_id) params.append('payment_id', payment_id);
