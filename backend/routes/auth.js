@@ -1,13 +1,14 @@
 const express = require('express');
 const bcrypt = require('bcryptjs');
 const { generateToken, authenticateToken } = require('../middleware/auth');
+const { validateSchema, registerSchema, loginSchema } = require('../middleware/validate');
 const User = require('../models/User');
 const router = express.Router();
 
 // @route   POST /api/auth/register
 // @desc    Register a new user
 // @access  Public
-router.post('/register', async (req, res) => {
+router.post('/register', validateSchema(registerSchema), async (req, res) => {
   try {
     const { name, email, password, phone } = req.body;
 
@@ -52,12 +53,17 @@ router.post('/register', async (req, res) => {
     user.lastLogin = new Date();
     await user.save();
 
+    res.cookie('token', token, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === 'production',
+      sameSite: 'strict'
+    });
+
     res.status(201).json({
       success: true,
       message: 'User registered successfully',
       data: {
-        user: user.toJSON(),
-        token
+        user: user.toJSON()
       }
     });
   } catch (error) {
@@ -73,7 +79,7 @@ router.post('/register', async (req, res) => {
 // @route   POST /api/auth/login
 // @desc    Login user
 // @access  Public
-router.post('/login', async (req, res) => {
+router.post('/login', validateSchema(loginSchema), async (req, res) => {
   try {
     const { email, password, remember = false } = req.body;
 
@@ -114,19 +120,29 @@ router.post('/login', async (req, res) => {
     }
 
     // Generate token with appropriate expiration
-    const tokenExpiry = remember ? '30d' : '7d';
     const token = generateToken(user._id);
 
     // Update last login
     user.lastLogin = new Date();
     await user.save();
 
+    const cookieOptions = {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === 'production',
+      sameSite: 'strict'
+    };
+
+    if (remember) {
+      cookieOptions.maxAge = 30 * 24 * 60 * 60 * 1000; // 30 days
+    }
+
+    res.cookie('token', token, cookieOptions);
+
     res.json({
       success: true,
       message: 'Login successful',
       data: {
         user: user.toJSON(),
-        token,
         remember
       }
     });
@@ -145,8 +161,12 @@ router.post('/login', async (req, res) => {
 // @access  Private
 router.post('/logout', authenticateToken, async (req, res) => {
   try {
-    // In a more sophisticated setup, you might want to blacklist the token
-    // For now, we'll just send a success response
+    res.clearCookie('token', {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === 'production',
+      sameSite: 'strict'
+    });
+
     res.json({
       success: true,
       message: 'Logged out successfully'

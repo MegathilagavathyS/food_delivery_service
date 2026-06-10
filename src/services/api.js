@@ -16,19 +16,27 @@ const api = axios.create({
   baseURL: API_BASE_URL,
   timeout: REQUEST_CONFIG.timeout,
   headers: REQUEST_CONFIG.headers,
+  withCredentials: true,
 });
 
 // Request interceptor to add auth token
 api.interceptors.request.use(
   (config) => {
-    const token = getAuthToken();
-    if (token) {
-      config.headers.Authorization = `Bearer ${token}`;
+    try {
+      const token = getAuthToken();
+      config.headers = config.headers || {};
+      if (token) {
+        config.headers.Authorization = `Bearer ${token}`;
+      }
+    } catch (err) {
+      // If token retrieval fails, continue without auth header
+      console.warn('getAuthToken() threw an error in request interceptor', err);
     }
-    
-    // Add request timestamp for debugging
-    config.metadata = { startTime: new Date() };
-    
+
+    // Add request timestamp for debugging (guarding existing metadata)
+    config.metadata = config.metadata || {};
+    config.metadata.startTime = config.metadata.startTime || new Date();
+
     return config;
   },
   (error) => {
@@ -39,41 +47,51 @@ api.interceptors.request.use(
 // Response interceptor for error handling and logging
 api.interceptors.response.use(
   (response) => {
-    // Calculate request duration
-    const duration = new Date() - response.config.metadata.startTime;
-    console.log(`API Request: ${response.config.method?.toUpperCase()} ${response.config.url} - ${duration}ms`);
-    
+    // Calculate request duration (guard metadata)
+    try {
+      const start = response.config?.metadata?.startTime || new Date();
+      const duration = new Date() - start;
+      console.log(`API Request: ${response.config?.method?.toUpperCase()} ${response.config?.url} - ${duration}ms`);
+    } catch (err) {
+      console.warn('Failed to compute request duration', err);
+    }
+
     return handleApiResponse(response);
   },
   async (error) => {
-    const duration = new Date() - error.config?.metadata?.startTime;
-    console.error(`API Error: ${error.config?.method?.toUpperCase()} ${error.config?.url} - ${duration}ms`, error);
-    
+    // Safely extract config and metadata
+    const cfg = error.config || {};
+    const startTime = cfg.metadata?.startTime || new Date();
+    try {
+      const duration = new Date() - startTime;
+      console.error(`API Error: ${cfg.method?.toUpperCase()} ${cfg.url} - ${duration}ms`, error);
+    } catch (err) {
+      console.error('API Error (failed to log duration):', err, error);
+    }
+
     // Handle 401 errors (unauthorized)
     if (error.response?.status === 401) {
-      removeAuthToken();
-      // Redirect to login page
-      if (window.location.pathname !== '/login') {
-        window.location.href = '/login?redirect=' + encodeURIComponent(window.location.pathname);
+      try { removeAuthToken(); } catch (e) { /* ignore */ }
+      if (typeof window !== 'undefined' && window.location.pathname !== '/login') {
+        try {
+          window.location.href = '/login?redirect=' + encodeURIComponent(window.location.pathname);
+        } catch (e) {
+          /* ignore navigation errors in non-browser env */
+        }
       }
     }
-    
-    // Retry logic for certain errors
-    if (RETRY_CONFIG.retryCondition(error) && !error.config.__retryCount) {
-      error.config.__retryCount = 0;
+
+    // Retry logic for certain errors (guard RETRY_CONFIG and cfg)
+    const canRetry = typeof RETRY_CONFIG?.retryCondition === 'function' && RETRY_CONFIG.retryCondition(error);
+    cfg.__retryCount = cfg.__retryCount || 0;
+
+    if (canRetry && cfg.__retryCount < (RETRY_CONFIG.retries || 0)) {
+      cfg.__retryCount++;
+      const delay = (RETRY_CONFIG.retryDelay || 0) * cfg.__retryCount;
+      await new Promise(resolve => setTimeout(resolve, delay));
+      return api(cfg);
     }
-    
-    if (error.config.__retryCount < RETRY_CONFIG.retries) {
-      error.config.__retryCount++;
-      
-      // Wait before retrying
-      await new Promise(resolve => 
-        setTimeout(resolve, RETRY_CONFIG.retryDelay * error.config.__retryCount)
-      );
-      
-      return api(error.config);
-    }
-    
+
     const apiError = handleApiError(error);
     return Promise.reject(apiError);
   }
@@ -178,8 +196,8 @@ const apiService = {
     getAll: () => apiService.get('/api/cities'),
   },
 
-  updateProfile: (data) => api.put('/auth/profile', data),
-  changePassword: (data) => api.put('/auth/password', data),
+  updateProfile: (data) => api.put('/api/auth/profile', data),
+  changePassword: (data) => api.put('/api/auth/password', data),
 };
 
 // Restaurant API calls
@@ -215,7 +233,7 @@ export const userAPI = {
   addAddress: (address) => api.post('/api/users/addresses', address),
   updateAddress: (id, address) => api.put(`/api/users/addresses/${id}`, address),
   deleteAddress: (id) => api.delete(`/api/users/addresses/${id}`),
-  setDefaultAddress: (id) => api.patch(`/api/users/addresses/${id}/default`),
-};
+  setDefaultAddress: (id) => api.patch(`/api/users/addresses/${id}/default`),  getPreferences: () => api.get('/api/users/preferences'),
+  updatePreferences: (preferences) => api.put('/api/users/preferences', preferences),};
 
 export default apiService;

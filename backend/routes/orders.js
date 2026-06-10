@@ -2,12 +2,13 @@ const express = require('express');
 const Order = require('../models/Order');
 const MenuItem = require('../models/MenuItem');
 const Restaurant = require('../models/Restaurant');
+const { validateSchema, createOrderSchema } = require('../middleware/validate');
 const router = express.Router();
 
 // @route   POST /api/orders
 // @desc    Create a new order
 // @access  Private
-router.post('/', async (req, res) => {
+router.post('/', validateSchema(createOrderSchema), async (req, res) => {
   try {
     const {
       restaurantId,
@@ -283,11 +284,22 @@ router.put('/:id/cancel', async (req, res) => {
 
     // Emit real-time notification
     const io = req.app.get('io');
+    const payload = {
+      orderId: order._id,
+      status: order.status,
+      estimatedTime: order.estimatedDeliveryTime,
+      deliveryPartner: order.deliveryPartner,
+      message: order.cancellationReason,
+      tracking: order.tracking
+    };
+
     io.to(`restaurant-${order.restaurantId}`).emit('order-cancelled', {
       orderId: order._id,
       orderNumber: order.orderNumber,
       reason: order.cancellationReason
     });
+    io.to(`user-${req.user._id}`).emit('orderStatusUpdate', payload);
+    io.to(`order-${order._id}`).emit('orderStatusUpdate', payload);
 
     res.json({
       success: true,

@@ -4,6 +4,7 @@ const cors = require('cors');
 const helmet = require('helmet');
 const morgan = require('morgan');
 const compression = require('compression');
+const cookieParser = require('cookie-parser');
 const rateLimit = require('express-rate-limit');
 const { createServer } = require('http');
 const { Server } = require('socket.io');
@@ -47,7 +48,8 @@ const server = createServer(app);
 const io = new Server(server, {
   cors: {
     origin: process.env.FRONTEND_URL || "http://localhost:3001",
-    methods: ["GET", "POST"]
+    methods: ["GET", "POST"],
+    credentials: true
   }
 });
 
@@ -70,6 +72,8 @@ app.use(cors({
   origin: process.env.FRONTEND_URL || "http://localhost:3001",
   credentials: true
 }));
+
+app.use(cookieParser());
 
 // Body parsing middleware
 app.use(express.json({ limit: '10mb' }));
@@ -108,6 +112,17 @@ io.on('connection', (socket) => {
   socket.on('join-restaurant-room', (restaurantId) => {
     socket.join(`restaurant-${restaurantId}`);
     console.log(`🏪 Restaurant ${restaurantId} joined their room`);
+  });
+
+  // Join a room scoped to a specific order
+  socket.on('join-order-room', (orderId) => {
+    socket.join(`order-${orderId}`);
+    console.log(`📦 Socket ${socket.id} joined order-${orderId}`);
+  });
+
+  socket.on('leave-order-room', (orderId) => {
+    socket.leave(`order-${orderId}`);
+    console.log(`📦 Socket ${socket.id} left order-${orderId}`);
   });
 
   socket.on('disconnect', () => {
@@ -173,6 +188,29 @@ process.on('SIGTERM', () => {
     mongoose.connection.close();
   });
 });
+
+const handleServerError = (error) => {
+  if (error.syscall !== 'listen') {
+    throw error;
+  }
+
+  const bind = typeof PORT === 'string' ? `Pipe ${PORT}` : `Port ${PORT}`;
+
+  switch (error.code) {
+    case 'EACCES':
+      console.error(`${bind} requires elevated privileges.`);
+      process.exit(1);
+      break;
+    case 'EADDRINUSE':
+      console.error(`${bind} is already in use. Please stop the process using this port or set a different PORT environment variable.`);
+      process.exit(1);
+      break;
+    default:
+      throw error;
+  }
+};
+
+server.on('error', handleServerError);
 
 server.listen(PORT, () => {
   console.log('🚀 FoodieExpress Backend Server Started');

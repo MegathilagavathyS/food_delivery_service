@@ -2,6 +2,8 @@ import React, { useState, useEffect } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
 import { showToast } from '../components/UI/Toast';
 import LoadingSpinner from '../components/UI/LoadingSpinner';
+import apiService, { userAPI } from '../services/api';
+import { setUser } from '../store/slices/authSlice';
 
 const Profile = () => {
   const [activeTab, setActiveTab] = useState('personal');
@@ -23,6 +25,11 @@ const Profile = () => {
     isDefault: false,
   });
   const [showAddressForm, setShowAddressForm] = useState(false);
+  const [preferences, setPreferences] = useState({
+    emailNotifications: true,
+    smsNotifications: true,
+    promotionalOffers: false,
+  });
 
   const dispatch = useDispatch();
   const { user, loading } = useSelector((state) => state.auth);
@@ -35,32 +42,30 @@ const Profile = () => {
         phone: user.phone || '',
         dateOfBirth: user.dateOfBirth || '',
       });
+      loadAddresses();
+      loadPreferences();
     }
-    
-    // Mock addresses - replace with API call
-    setAddresses([
-      {
-        id: '1',
-        label: 'Home',
-        street: '123 Main St',
-        city: 'New York',
-        state: 'NY',
-        zipCode: '10001',
-        country: 'US',
-        isDefault: true,
-      },
-      {
-        id: '2',
-        label: 'Work',
-        street: '456 Business Ave',
-        city: 'New York',
-        state: 'NY',
-        zipCode: '10002',
-        country: 'US',
-        isDefault: false,
-      },
-    ]);
   }, [user]);
+
+  const loadAddresses = async () => {
+    try {
+      const response = await userAPI.getAddresses();
+      setAddresses(response.data.addresses || []);
+    } catch (error) {
+      showToast('Failed to load saved addresses', 'error');
+    }
+  };
+
+  const loadPreferences = async () => {
+    try {
+      const response = await userAPI.getPreferences();
+      if (response.data && response.data.preferences) {
+        setPreferences(response.data.preferences);
+      }
+    } catch (error) {
+      showToast('Failed to load saved preferences', 'error');
+    }
+  };
 
   const handleInputChange = (e) => {
     setFormData({
@@ -71,7 +76,17 @@ const Profile = () => {
 
   const handleSaveProfile = async () => {
     try {
-      // API call to update profile
+      const response = await apiService.updateProfile({
+        name: formData.name,
+        phone: formData.phone,
+      });
+
+      const updatedUser = response.data?.user || response.data;
+      if (updatedUser) {
+        dispatch(setUser({ user: updatedUser, token: localStorage.getItem('token') || '' }));
+        localStorage.setItem('user', JSON.stringify(updatedUser));
+      }
+
       showToast('Profile updated successfully!', 'success');
       setIsEditing(false);
     } catch (error) {
@@ -86,42 +101,77 @@ const Profile = () => {
     });
   };
 
-  const handleAddAddress = () => {
+  const handleAddAddress = async () => {
     if (!newAddress.street || !newAddress.city || !newAddress.state || !newAddress.zipCode) {
       showToast('Please fill in all required fields', 'error');
       return;
     }
 
-    const address = {
-      ...newAddress,
-      id: Date.now().toString(),
-    };
+    try {
+      const response = await userAPI.addAddress({
+        type: newAddress.label || 'home',
+        address: newAddress.street,
+        city: newAddress.city,
+        area: newAddress.state,
+        coordinates: newAddress.coordinates,
+        isDefault: newAddress.isDefault,
+      });
 
-    setAddresses([...addresses, address]);
-    setNewAddress({
-      label: '',
-      street: '',
-      city: '',
-      state: '',
-      zipCode: '',
-      country: 'US',
-      isDefault: false,
-    });
-    setShowAddressForm(false);
-    showToast('Address added successfully!', 'success');
+      setAddresses(response.data.addresses || []);
+      setNewAddress({
+        label: '',
+        street: '',
+        city: '',
+        state: '',
+        zipCode: '',
+        country: 'US',
+        isDefault: false,
+      });
+      setShowAddressForm(false);
+      showToast('Address added successfully!', 'success');
+    } catch (error) {
+      showToast('Failed to add address', 'error');
+    }
   };
 
-  const handleDeleteAddress = (addressId) => {
-    setAddresses(addresses.filter(addr => addr.id !== addressId));
-    showToast('Address deleted successfully!', 'success');
+  const handleDeleteAddress = async (addressId) => {
+    try {
+      const response = await userAPI.deleteAddress(addressId);
+      setAddresses(response.data.addresses || []);
+      showToast('Address deleted successfully!', 'success');
+    } catch (error) {
+      showToast('Failed to delete address', 'error');
+    }
   };
 
-  const handleSetDefaultAddress = (addressId) => {
-    setAddresses(addresses.map(addr => ({
-      ...addr,
-      isDefault: addr.id === addressId
-    })));
-    showToast('Default address updated!', 'success');
+  const handleSetDefaultAddress = async (addressId) => {
+    try {
+      const response = await userAPI.setDefaultAddress(addressId);
+      setAddresses(response.data.addresses || []);
+      showToast('Default address updated!', 'success');
+    } catch (error) {
+      showToast('Failed to update default address', 'error');
+    }
+  };
+
+  const handlePreferenceChange = (e) => {
+    const { name, checked } = e.target;
+    setPreferences((prev) => ({
+      ...prev,
+      [name]: checked,
+    }));
+  };
+
+  const handleSavePreferences = async () => {
+    try {
+      const response = await userAPI.updatePreferences(preferences);
+      if (response.data && response.data.preferences) {
+        setPreferences(response.data.preferences);
+      }
+      showToast('Preferences saved successfully!', 'success');
+    } catch (error) {
+      showToast('Failed to save preferences', 'error');
+    }
   };
 
   const tabs = [

@@ -1,14 +1,15 @@
 const express = require('express');
-//const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
+const crypto = require('crypto');
 const Razorpay = require('razorpay');
+const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
 const Order = require('../models/Order');
 const router = express.Router();
 const axios = require('axios');
 
 // Razorpay instance
 const razorpay = new Razorpay({
-    key_id: process.env.RAZORPAY_KEY_ID,
-    key_secret: process.env.RAZORPAY_KEY_SECRET
+  key_id: process.env.RAZORPAY_KEY_ID,
+  key_secret: process.env.RAZORPAY_KEY_SECRET
 });
 
 // @route   POST /api/payments/create-razorpay-order
@@ -16,38 +17,116 @@ const razorpay = new Razorpay({
 // @access  Public
 router.post('/create-razorpay-order', async (req, res) => {
   try {
-    console.log('[Razorpay] Received order creation request');
-    console.log('[Razorpay] Request body:', req.body);
-    console.log('[Razorpay] Razorpay instance keys:', { key_id: process.env.RAZORPAY_KEY_ID ? 'SET' : 'MISSING', key_secret: process.env.RAZORPAY_KEY_SECRET ? 'SET' : 'MISSING' });
-    
-    const { amount, currency } = req.body;
-    if (!amount) {
+    const { amount, currency = 'INR', receipt } = req.body;
+
+    if (!amount || amount <= 0) {
       return res.status(400).json({
         success: false,
-        message: 'Amount is required'
+        message: 'A valid amount is required'
       });
     }
+
     const options = {
       amount: Math.round(amount * 100), // amount in paise
-      currency: currency || 'INR',
-      receipt: `receipt_order_${Date.now()}`
+      currency,
+      receipt: receipt || `receipt_order_${Date.now()}`,
+      payment_capture: 1
     };
-    
-    console.log('[Razorpay] Creating order with options:', options);
+
     const order = await razorpay.orders.create(options);
-    console.log('[Razorpay] Order created successfully:', order.id);
-    
-    res.json({
+
+    return res.json({
       success: true,
       data: order
     });
   } catch (err) {
     console.error('Razorpay order creation error:', err);
-    console.error('Error message:', err.message);
-    console.error('Error code:', err.code);
-    res.status(500).json({
+    return res.status(500).json({
       success: false,
-      message: 'Failed to create Razorpay order: ' + err.message
+      message: 'Failed to create Razorpay order',
+      error: err.message
+    });
+  }
+});
+
+// @route   POST /api/payments/razorpay/verify
+// @desc    Verify Razorpay payment signature and update order status
+// @access  Public
+router.post('/razorpay/verify', async (req, res) => {
+  try {
+    const {
+      orderId,
+      razorpay_order_id,
+      razorpay_payment_id,
+      razorpay_signature
+    } = req.body;
+
+    if (!orderId || !razorpay_order_id || !razorpay_payment_id || !razorpay_signature) {
+      return res.status(400).json({
+        success: false,
+        message: 'Order ID, Razorpay order id, payment id, and signature are required'
+      });
+    }
+
+    const generatedSignature = crypto
+      .createHmac('sha256', process.env.RAZORPAY_KEY_SECRET)
+      .update(`${razorpay_order_id}|${razorpay_payment_id}`)
+      .digest('hex');
+
+    const signatureBuffer = Buffer.from(razorpay_signature, 'hex');
+    const generatedBuffer = Buffer.from(generatedSignature, 'hex');
+
+    if (signatureBuffer.length !== generatedBuffer.length || !crypto.timingSafeEqual(signatureBuffer, generatedBuffer)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Razorpay signature verification failed'
+      });
+    }
+
+    const order = await Order.findById(orderId);
+    if (!order) {
+      return res.status(404).json({
+        success: false,
+        message: 'Order not found'
+      });
+    }
+
+    order.paymentStatus = 'paid';
+    order.status = 'confirmed';
+    order.paymentId = razorpay_payment_id;
+
+    order.tracking.push({
+      status: 'confirmed',
+      message: 'Payment verified and order confirmed',
+      timestamp: new Date()
+    });
+
+    await order.save();
+
+    const io = req.app.get('io');
+    const payload = {
+      orderId: order._id,
+      status: order.status,
+      estimatedTime: order.estimatedDeliveryTime,
+      deliveryPartner: order.deliveryPartner,
+      message: 'Payment verified and order confirmed',
+      tracking: order.tracking
+    };
+
+    io.to(`user-${order.userId}`).emit('orderStatusUpdate', payload);
+    io.to(`order-${order._id}`).emit('orderStatusUpdate', payload);
+
+    return res.json({
+      success: true,
+      message: 'Payment verified successfully',
+      data: order
+    });
+  } catch (err) {
+    console.error('Razorpay signature verification error:', err);
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to verify Razorpay payment',
+      error: err.message
     });
   }
 });
@@ -66,7 +145,6 @@ router.post('/create-intent', async (req, res) => {
       });
     }
 
-    // Verify order belongs to user
     const order = await Order.findOne({
       _id: orderId,
       userId: req.user._id
@@ -79,7 +157,6 @@ router.post('/create-intent', async (req, res) => {
       });
     }
 
-    // Verify amount matches order total
     if (Math.round(amount * 100) !== Math.round(order.totalAmount * 100)) {
       return res.status(400).json({
         success: false,
@@ -87,9 +164,8 @@ router.post('/create-intent', async (req, res) => {
       });
     }
 
-    // Create payment intent
     const paymentIntent = await stripe.paymentIntents.create({
-      amount: Math.round(amount * 100), // Convert to cents
+      amount: Math.round(amount * 100),
       currency: 'inr',
       metadata: {
         orderId: order._id.toString(),
@@ -99,7 +175,7 @@ router.post('/create-intent', async (req, res) => {
       description: `Payment for order ${order.orderNumber}`
     });
 
-    res.json({
+    return res.json({
       success: true,
       data: {
         clientSecret: paymentIntent.client_secret,
@@ -108,7 +184,7 @@ router.post('/create-intent', async (req, res) => {
     });
   } catch (error) {
     console.error('Create payment intent error:', error);
-    res.status(500).json({
+    return res.status(500).json({
       success: false,
       message: 'Failed to create payment intent'
     });
@@ -129,7 +205,6 @@ router.post('/confirm', async (req, res) => {
       });
     }
 
-    // Retrieve payment intent from Stripe
     const paymentIntent = await stripe.paymentIntents.retrieve(paymentIntentId);
 
     if (paymentIntent.status !== 'succeeded') {
@@ -139,7 +214,6 @@ router.post('/confirm', async (req, res) => {
       });
     }
 
-    // Find and update order
     const order = await Order.findOne({
       _id: orderId,
       userId: req.user._id
@@ -152,43 +226,42 @@ router.post('/confirm', async (req, res) => {
       });
     }
 
-    // Update order payment status
     order.paymentStatus = 'paid';
     order.paymentId = paymentIntentId;
     order.status = 'confirmed';
-
-    // Add tracking entry
     order.tracking.push({
       status: 'confirmed',
       message: 'Payment confirmed, order sent to restaurant',
       timestamp: new Date()
     });
-
     await order.save();
 
-    // Emit real-time notification to restaurant
     const io = req.app.get('io');
+    const payload = {
+      orderId: order._id,
+      status: order.status,
+      estimatedTime: order.estimatedDeliveryTime,
+      deliveryPartner: order.deliveryPartner,
+      message: 'Payment confirmed, order sent to restaurant',
+      tracking: order.tracking
+    };
+
     io.to(`restaurant-${order.restaurantId}`).emit('order-confirmed', {
       orderId: order._id,
       orderNumber: order.orderNumber,
       totalAmount: order.totalAmount
     });
+    io.to(`user-${req.user._id}`).emit('orderStatusUpdate', payload);
+    io.to(`order-${order._id}`).emit('orderStatusUpdate', payload);
 
-    // Emit notification to user
-    io.to(`user-${req.user._id}`).emit('payment-confirmed', {
-      orderId: order._id,
-      orderNumber: order.orderNumber,
-      status: order.status
-    });
-
-    res.json({
+    return res.json({
       success: true,
       message: 'Payment confirmed successfully',
       data: { order }
     });
   } catch (error) {
     console.error('Confirm payment error:', error);
-    res.status(500).json({
+    return res.status(500).json({
       success: false,
       message: 'Failed to confirm payment'
     });
@@ -209,13 +282,9 @@ router.post('/webhook', express.raw({ type: 'application/json' }), async (req, r
     return res.status(400).send(`Webhook Error: ${err.message}`);
   }
 
-  // Handle the event
   switch (event.type) {
-    case 'payment_intent.succeeded':
+    case 'payment_intent.succeeded': {
       const paymentIntent = event.data.object;
-      console.log('Payment succeeded:', paymentIntent.id);
-      
-      // Update order status if not already updated
       if (paymentIntent.metadata.orderId) {
         try {
           const order = await Order.findById(paymentIntent.metadata.orderId);
@@ -230,12 +299,9 @@ router.post('/webhook', express.raw({ type: 'application/json' }), async (req, r
         }
       }
       break;
-
-    case 'payment_intent.payment_failed':
+    }
+    case 'payment_intent.payment_failed': {
       const failedPayment = event.data.object;
-      console.log('Payment failed:', failedPayment.id);
-      
-      // Update order status
       if (failedPayment.metadata.orderId) {
         try {
           const order = await Order.findById(failedPayment.metadata.orderId);
@@ -248,12 +314,12 @@ router.post('/webhook', express.raw({ type: 'application/json' }), async (req, r
         }
       }
       break;
-
+    }
     default:
       console.log(`Unhandled event type ${event.type}`);
   }
 
-  res.json({ received: true });
+  return res.json({ received: true });
 });
 
 // @route   GET /api/payments/methods
@@ -261,15 +327,13 @@ router.post('/webhook', express.raw({ type: 'application/json' }), async (req, r
 // @access  Private
 router.get('/methods', async (req, res) => {
   try {
-    // In a real implementation, you would fetch saved payment methods from Stripe
-    // For now, return empty array
-    res.json({
+    return res.json({
       success: true,
       data: { paymentMethods: [] }
     });
   } catch (error) {
     console.error('Get payment methods error:', error);
-    res.status(500).json({
+    return res.status(500).json({
       success: false,
       message: 'Failed to fetch payment methods'
     });
@@ -290,7 +354,6 @@ router.post('/refund', async (req, res) => {
       });
     }
 
-    // Find order
     const order = await Order.findOne({
       _id: orderId,
       userId: req.user._id
@@ -310,7 +373,6 @@ router.post('/refund', async (req, res) => {
       });
     }
 
-    // Create refund in Stripe
     const refund = await stripe.refunds.create({
       payment_intent: order.paymentId,
       reason: 'requested_by_customer',
@@ -320,22 +382,18 @@ router.post('/refund', async (req, res) => {
       }
     });
 
-    // Update order
     order.paymentStatus = 'refunded';
     order.status = 'refunded';
     order.refundAmount = order.totalAmount;
     order.cancellationReason = reason || 'Refund requested';
-
-    // Add tracking entry
     order.tracking.push({
       status: 'refunded',
       message: 'Order refunded successfully',
       timestamp: new Date()
     });
-
     await order.save();
 
-    res.json({
+    return res.json({
       success: true,
       message: 'Refund processed successfully',
       data: {
@@ -346,7 +404,7 @@ router.post('/refund', async (req, res) => {
     });
   } catch (error) {
     console.error('Process refund error:', error);
-    res.status(500).json({
+    return res.status(500).json({
       success: false,
       message: 'Failed to process refund'
     });
@@ -378,7 +436,6 @@ router.post('/verify-otp', async (req, res) => {
     }
 
     const url = `https://api.razorpay.com/v2/otp/verify?key_id=${encodeURIComponent(keyId)}`;
-
     const auth = Buffer.from(`${keyId}:${keySecret}`).toString('base64');
 
     const razorpayResp = await axios.post(url, params.toString(), {
@@ -390,7 +447,6 @@ router.post('/verify-otp', async (req, res) => {
 
     return res.json({ success: true, data: razorpayResp.data });
   } catch (error) {
-    // Surface Razorpay error body when available
     if (error.response && error.response.data) {
       console.error('Razorpay OTP verify error:', error.response.data);
       return res.status(error.response.status || 500).json({ success: false, error: error.response.data });

@@ -66,7 +66,19 @@ const userSchema = new mongoose.Schema({
     healthGoals: [{
       type: String,
       enum: ['low-calorie', 'high-protein', 'low-carb', 'balanced']
-    }]
+    }],
+    emailNotifications: {
+      type: Boolean,
+      default: true
+    },
+    smsNotifications: {
+      type: Boolean,
+      default: true
+    },
+    promotionalOffers: {
+      type: Boolean,
+      default: false
+    }
   },
   orderHistory: [{
     type: mongoose.Schema.Types.ObjectId,

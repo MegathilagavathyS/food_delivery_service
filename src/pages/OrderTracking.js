@@ -1,26 +1,34 @@
 import React, { useState, useEffect } from 'react';
-import { useParams } from 'react-router-dom';
+import { useParams, Link } from 'react-router-dom';
 import { useDispatch, useSelector } from 'react-redux';
 import { fetchOrderById, trackOrder } from '../store/slices/orderSlice';
 import LoadingSpinner from '../components/UI/LoadingSpinner';
 import { showToast } from '../components/UI/Toast';
 import DeliveryChat from '../components/Chat/DeliveryChat';
 import OrderStatusTracker from '../components/OrderTracking/OrderStatusTracker';
+import socketService from '../services/socketService';
 
 const OrderTracking = () => {
   const { orderId } = useParams();
   const [isChatOpen, setIsChatOpen] = useState(false);
   
   const dispatch = useDispatch();
-  const { currentOrder, loading } = useSelector((state) => state.orders);
+  const { currentOrder, loading, orderStatus } = useSelector((state) => state.orders);
 
   useEffect(() => {
     if (orderId) {
       dispatch(fetchOrderById(orderId));
     }
-      }
-    };
   }, [dispatch, orderId]);
+
+  useEffect(() => {
+    if (currentOrder && currentOrder._id) {
+      socketService.joinOrderRoom(currentOrder._id);
+      return () => {
+        socketService.leaveOrderRoom(currentOrder._id);
+      };
+    }
+  }, [currentOrder]);
 
   useEffect(() => {
     // Initialize Google Maps when component mounts

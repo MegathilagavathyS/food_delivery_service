@@ -321,7 +321,7 @@ router.get('/preferences', async (req, res) => {
 // @access  Private
 router.put('/preferences', async (req, res) => {
   try {
-    const { dietary, spiceLevel, cuisines, healthGoals } = req.body;
+    const { dietary, spiceLevel, cuisines, healthGoals, emailNotifications, smsNotifications, promotionalOffers } = req.body;
     
     const user = await User.findById(req.user._id);
     
@@ -329,6 +329,9 @@ router.put('/preferences', async (req, res) => {
     if (spiceLevel) user.preferences.spiceLevel = spiceLevel;
     if (cuisines) user.preferences.cuisines = cuisines;
     if (healthGoals) user.preferences.healthGoals = healthGoals;
+    if (typeof emailNotifications === 'boolean') user.preferences.emailNotifications = emailNotifications;
+    if (typeof smsNotifications === 'boolean') user.preferences.smsNotifications = smsNotifications;
+    if (typeof promotionalOffers === 'boolean') user.preferences.promotionalOffers = promotionalOffers;
     
     await user.save();
 
